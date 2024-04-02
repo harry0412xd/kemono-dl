@@ -94,19 +94,19 @@ def get_args():
 
 
     ap.add_argument("--dirname-pattern",
-                    metavar="DIRNAME_PATTERN", type=str, default='Downloads\{service}\{username} [{user_id}]',
+                    metavar="DIRNAME_PATTERN", type=str, default='Downloads/{service}/{username} [{user_id}]',
                     help="Set the file path pattern for where files are downloaded. See Output Patterns for more detail.")
 
     ap.add_argument("--filename-pattern",
-                    metavar="FILENAME_PATTERN", type=str, default='[{published}] [{id}] {title}\{index}_{filename}.{ext}',
+                    metavar="FILENAME_PATTERN", type=str, default='[{published}] [{id}] {title}/{index}_{filename}.{ext}',
                     help="Set the file name pattern for attachments. See Output Patterns for more detail.")
 
     ap.add_argument("--inline-filename-pattern",
-                    metavar="INLINE_FILENAME_PATTERN", type=str, default='[{published}] [{id}] {title}\inline\{index}_{filename}.{ext}',
+                    metavar="INLINE_FILENAME_PATTERN", type=str, default='[{published}] [{id}] {title}/inline/{index}_{filename}.{ext}',
                     help="Set the file name pattern for inline images. See Output Patterns for more detail.")
 
     ap.add_argument("--other-filename-pattern",
-                    metavar="OTHER_FILENAME_PATTERN", type=str, default='[{published}] [{id}] {title}\[{id}]_{filename}.{ext}',
+                    metavar="OTHER_FILENAME_PATTERN", type=str, default='[{published}] [{id}] {title}/[{id}]_{filename}.{ext}',
                     help="Set the file name pattern for post content, extracted links, and json. See Output Patterns for more detail.")
 
     ap.add_argument("--user-filename-pattern",
@@ -229,7 +229,11 @@ def get_args():
 
     ap.add_argument("--dupe-check",
                     action=argparse.BooleanOptionalAction, default=True,
-                    help='Simple similar filename file search and hash compare to prevent duplicate downloads, only works with "{index}_" first file naming scheme')
+                    help='Simple similar filename file search and hash compare to prevent duplicate downloads')
+    
+    ap.add_argument("--dupe-check-pattern",
+                    metavar="DUPE_CHECK_PATTERN", type=str, default="{index}_*,*{id}*/{index}_*",
+                    help="Specify similar filename search patterns for dupe check, 2 patterns separated by comma, please include wildcard. (default: {index}_*,*{id}*/{index}_*)")
 
     ap.add_argument("--force-unlisted",
                     action=argparse.BooleanOptionalAction, default=False,
@@ -250,6 +254,10 @@ def get_args():
     ap.add_argument("--cccp",
                     action=argparse.BooleanOptionalAction, default=False,
                     help='Change all input links (--links and --from-file) to .su domain links.')
+
+    ap.add_argument("--announcements",
+                    action=argparse.BooleanOptionalAction, default=False,
+                    help="Download announcements (always overwrite if site return more content than local one). Only works when a user url is passed.")
 
     args = vars(ap.parse_args())
     args['cookie_domains'] = {'kemono': None, 'coomer': None}
