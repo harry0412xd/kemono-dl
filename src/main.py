@@ -34,6 +34,8 @@ class downloader:
         self.cookies = args['cookies']
         self.timeout = 300
 
+        self.headcheck = args['head_check']
+
         # file/folder naming
         self.download_path_template = args['dirname_pattern']
         self.filename_template = args['filename_pattern']
@@ -91,6 +93,7 @@ class downloader:
         self.retry = args['retry']
         self.no_part = args['no_part_files']
         self.ratelimit_sleep = args['ratelimit_sleep']
+        self.ratelimit_ms = args['ratelimit_ms']
         self.post_timeout = args['post_timeout']
         self.simulate = args['simulate']
         self.local_hash = args['local_hash']
@@ -101,8 +104,13 @@ class downloader:
         self.fp_added = args['fp_added']
         self.fancards = args['fancards']
         self.cookie_domains = args['cookie_domains']
+        self.proxy_agent = args['proxy_agent']
 
-        self.session = RefererSession()
+        self.session = RefererSession(
+            proxy_agent = self.proxy_agent,
+            max_retries_429 = self.retry,
+            sleep_429 = self.ratelimit_sleep
+        )
         retries = Retry(
             total=self.retry,
             backoff_factor=0.1,
@@ -177,19 +185,13 @@ class downloader:
                 logger.debug(f"Requesting post json from: {api}")
                 response = self.session.get(url=api, cookies=self.cookies, headers=self.headers, timeout=self.timeout)
                 if response.status_code == 429:
-                    logger.warning(f"Failed to request post json from: {api} | 429 Too Many Requests | Sleeping for {self.ratelimit_sleep} seconds")
-                    time.sleep(self.ratelimit_sleep)
-                    if retry > 0:
-                        self.get_post(url=url, retry=retry-1, chunk=chunk, first=first)
+                    logger.warning(f"Failed to request post json from: {api} | 429 Too Many Requests | All retries failed")
                     return
             else:
                 logger.debug(f"Requesting user json from: {api}?o={chunk}")
                 response = self.session.get(url=f"{api}?o={chunk}", cookies=self.cookies, headers=self.headers, timeout=self.timeout)
                 if response.status_code == 429:
-                    logger.warning(f"Failed to request user json from: {api}?o={chunk} | 429 Too Many Requests | Sleeping for {self.ratelimit_sleep} seconds")
-                    time.sleep(self.ratelimit_sleep)
-                    if retry > 0:
-                        self.get_post(url=url, retry=retry-1, chunk=chunk, first=first)
+                    logger.warning(f"Failed to request user json from: {api}?o={chunk} | 429 Too Many Requests | All retries failed")
                     return
             json = response.json()
             if not json:
@@ -209,19 +211,20 @@ class downloader:
                         self.download_icon_banner(post_tmp, self.icon_banner, retry=self.retry)
                         if self.dms:
                             logger.debug(f"Writting dms | {user['name']} | {user['id']}")
-                            self.write_dms(post_tmp)
+                            self.write_dms(post_tmp,retry=self.retry)
                         if self.fancards:
                             logger.debug(f"Downloading fancards | {user['name']} | {user['id']}")
-                            self.download_fancards(post_tmp)
+                            self.download_fancards(post_tmp,retry=self.retry)
                         if self.announcements:
                             logger.debug(f"Writting announcements | {user['name']} | {user['id']}")
-                            self.write_announcements(post_tmp)
+                            self.write_announcements(post_tmp,retry=self.retry)
                         first = False
                     except:
-                        logger.warning(f"Failed to get icon, banner, dms, fancards or announcements | Probably 429 | Sleeping for {self.ratelimit_sleep} seconds")
-                        time.sleep(self.ratelimit_sleep)
                         if retry > 0:
+                            logger.warning(f"Failed to get icon, banner, dms, fancards or announcements | Retrying")
                             self.get_post(url=url, retry=retry-1, chunk=chunk, first=True)
+                        else:
+                            logger.error(f"Failed to get icon, banner, dms, fancards or announcements | All retries failed")
                         return
                 comments_original=self.comments
                 self.comments=False
@@ -255,12 +258,7 @@ class downloader:
             image_url = "https://{site}/{img_type}s/{service}/{user_id}".format(img_type=img_type, **post['post_variables'])
             response = self.session.get(url=image_url,headers=self.headers, cookies=self.cookies, timeout=self.timeout)
             if response.status_code == 429:
-                logger.warning(f"Unable to download profile {img_type} for {post['post_variables']['username']} | 429 Too Many Requests | Sleeping for {self.ratelimit_sleep} seconds")
-                time.sleep(self.ratelimit_sleep)
-                if retry > 0:
-                    self.download_icon_banner(post=post, img_types=img_types, retry=retry-1)
-                else:
-                    logger.error(f"Unable to download profile {img_type} for {post['post_variables']['username']} | 429 Too Many Requests | All retry attemps failed")
+                logger.error(f"Unable to download profile {img_type} for {post['post_variables']['username']} | 429 Too Many Requests | All retries failed")
                 return
             try:
                 image = Image.open(BytesIO(response.content))
@@ -281,13 +279,24 @@ class downloader:
             except:
                 logger.error(f"Unable to download profile {img_type} for {post['post_variables']['username']}")
 
-    def write_dms(self, post:dict):
+    def write_dms(self, post:dict, retry:int):
         # no api method to get comments so using from html (not future proof)
         if post['post_variables']['service'] != 'patreon':
             logger.debug("Skipping dms for non patreon user https://{site}/{service}/user/{user_id}".format(**post['post_variables']))
             return
         post_url = "https://{site}/{service}/user/{user_id}/dms".format(**post['post_variables'])
         response = self.session.get(url=post_url, allow_redirects=True, headers=self.headers, cookies=self.cookies, timeout=self.timeout)
+        if not response.ok:
+            if response.status_code==429:
+                logger.warning("Unable to download DMs for {service} {user_id} | 429 | All retries failed".format(**post['post_variables']))
+                return
+            else:
+                logger.warning("Unable to download DMs for {service} {user_id} | {code} | Retrying.".format(core=response.status_code,**post['post_variables']))
+            if retry > 0:
+                self.write_dms(post=post,retry=retry-1)
+            else:
+                logger.error("Unable to download DMs for {service} {user_id} | {code} | All retries failed.".format(core=response.status_code,**post['post_variables']))
+            return
         page_soup = BeautifulSoup(response.text, 'html.parser')
         if page_soup.find("div", {"class": "no-results"}):
             logger.info("No DMs found for https://{site}/{service}/user/{user_id}".format(**post['post_variables']))
@@ -300,7 +309,7 @@ class downloader:
         file_path = compile_file_path(post['post_path'], post['post_variables'], file_variables, self.user_filename_template, self.restrict_ascii)
         self.write_to_file(file_path, dms_soup.prettify())
 
-    def download_fancards(self, post:dict):
+    def download_fancards(self, post:dict, retry:int):
         # there's api now, too lazy to rewrite
         if post['post_variables']['service'] != 'fanbox':
             logger.debug("Skipping fancards for non fanbox user https://{site}/{service}/user/{user_id}".format(**post['post_variables']))
@@ -308,6 +317,17 @@ class downloader:
         post_url = "https://{site}/{service}/user/{user_id}/fancards".format(**post['post_variables'])
         logger.info(f"Downloading fancards {post_url}")
         response = self.session.get(url=post_url, allow_redirects=True, headers=self.headers, cookies=self.cookies, timeout=self.timeout)
+        if not response.ok:
+            if response.status_code==429:
+                logger.warning("Unable to find Fancards for {service} {user_id} | 429 | All retries failed".format(**post['post_variables']))
+                return
+            else:
+                logger.warning("Unable to find Fancards for {service} {user_id} | {code} | Retrying.".format(core=response.status_code,**post['post_variables']))
+            if retry > 0:
+                self.download_fancards(post=post,retry=retry-1)
+            else:
+                logger.error("Unable to find Fancards for {service} {user_id} | {code} | All retries failed.".format(core=response.status_code,**post['post_variables']))
+            return
         page_soup = BeautifulSoup(response.text, 'html.parser')
         if page_soup.find("div", {"class": "no-results"}):
             logger.info("No fancards found for https://{site}/{service}/user/{user_id}".format(**post['post_variables']))
@@ -328,11 +348,19 @@ class downloader:
             file_path = compile_file_path(os.path.join(post['post_path'],'Fancards'), post['post_variables'], file_variables, self.user_filename_template, self.restrict_ascii)
             self.download_file({"file_path":file_path,"file_variables":file_variables}, retry=self.retry, post=post) #dummy postid
 
-    def write_announcements(self, post:dict):
+    def write_announcements(self, post:dict, retry:int):
         post_url = "https://{site}/api/v1/{service}/user/{user_id}/announcements".format(**post['post_variables'])
         response = self.session.get(url=post_url, allow_redirects=True, headers=self.headers, cookies=self.cookies, timeout=self.timeout)
         if not response.ok:
-            logger.error("Failed to download announcement, skipping...")
+            if response.status_code==429:
+                logger.warning("Unable to get announcements for {service} {user_id} | 429 | All retries failed".format(**post['post_variables']))
+                return
+            else:
+                logger.warning("Unable to get announcements for {service} {user_id} | {code} | Retrying.".format(core=response.status_code,**post['post_variables']))
+            if retry > 0:
+                self.write_announcements(post=post,retry=retry-1)
+            else:
+                logger.error("Unable to get announcements for {service} {user_id} | {code} | All retries failed.".format(core=response.status_code,**post['post_variables']))
             return
         if not len(response.json()):
             logger.info("No announcements found for https://{site}/{service}/user/{user_id}".format(**post['post_variables']))
@@ -397,10 +425,7 @@ class downloader:
             post_url = "https://{site}/{service}/user/{user_id}/post/{id}".format(**post_variables)
             response = self.session.get(url=post_url, allow_redirects=True, headers=self.headers, cookies=self.cookies, timeout=self.timeout)
             if response.status_code == 429:
-                logger.warning(f"Failed to get post comments | 429 Too Many Requests | Sleeping for {self.ratelimit_sleep} seconds")
-                time.sleep(self.ratelimit_sleep)
-                if retry > 0:
-                    return self.get_comments(post_variables=post_variables, retry=retry-1)
+                logger.warning(f"Failed to get post comments | 429 Too Many Requests | All retries failed")
             page_soup = BeautifulSoup(response.text, 'html.parser')
             comment_soup = page_soup.find("div", {"class": "post__comments"})
             no_comments = re.search('([^ ]+ does not support comment scraping yet\.|No comments found for this post\.)',comment_soup.text)
@@ -447,7 +472,12 @@ class downloader:
             # loop over attachments and set file variables
             for index, attachment in enumerate(post['attachments']):
                 file = {}
-                filename, file_extension = os.path.splitext(attachment['name'])
+                if attachment.get('name') and isinstance(attachment.get('name'),str):
+                    filename, file_extension = os.path.splitext(attachment['name'])
+                elif attachment.get('path') and isinstance(attachment.get('path'),str):
+                    filename, file_extension = os.path.splitext(attachment['path'].split('/')[-1])
+                else:
+                    continue
                 m = re.search(r'[a-zA-Z0-9]{64}', attachment['path'])
                 file_hash = m.group(0) if m else None
                 file['file_variables'] = {
@@ -581,14 +611,18 @@ class downloader:
         logger.debug(f"Downloading from: {file['file_variables']['url']}")
         logger.debug(f"Downloading to: {part_file}")
 
+        request_headers={'Referer':file['file_variables']['referer']}
         # try to resume part file
         resume_size = 0
-        if os.path.exists(part_file) and not self.overwrite:
+        if os.path.exists(part_file) and not self.overwrite and os.path.getsize(part_file):
             resume_size = os.path.getsize(part_file)
             logger.info(f"Trying to resuming partial download | Resume size: {resume_size} bytes")
+            request_headers['Range']=f"bytes={resume_size}-"
 
         try:
-            response = self.session.get(url=file['file_variables']['url'], stream=True, headers={**self.headers,'Range':f"bytes={resume_size}-", 'Referer':file['file_variables']['referer']}, cookies=self.cookies, timeout=self.timeout)
+            if self.headcheck:
+                head_ref = self.session.get(url=file['file_variables']['url'], stream=False, headers=dict(**self.headers,**{'Range':f'bytes={resume_size}-{resume_size+1023}'}), cookies=self.cookies, timeout=self.timeout).content
+            response = self.session.get(url=file['file_variables']['url'], stream=True, headers=dict(**self.headers,**request_headers), cookies=self.cookies, timeout=self.timeout)
         except:
             logger.exception(f"Failed to get responce: {file['file_variables']['url']} | Retrying")
             if retry > 0:
@@ -608,7 +642,7 @@ class downloader:
             for _ in range(self.retry_403):
                 logger.info('A 403 encountered, retry without session.')
                 try:
-                    response = requests.get(url=file['file_variables']['url'], stream=True, headers={'Range':f"bytes={resume_size}-", 'Referer':file['file_variables']['referer']}, timeout=self.timeout,proxies=self.proxies)
+                    response = requests.get(url=file['file_variables']['url'], stream=True, headers=request_headers, timeout=self.timeout,proxies=self.proxies)
                 except:
                     logger.exception(f"Failed to get responce: {file['file_variables']['url']} | Retrying")
                     if retry > 0:
@@ -646,11 +680,7 @@ class downloader:
             return
 
         if response.status_code == 429:
-            logger.warning(f"Failed to download: {os.path.split(file['file_path'])[1]} | 429 Too Many Requests | Sleeping for {self.ratelimit_sleep} seconds")
-            time.sleep(self.ratelimit_sleep)
-            if retry > 0:
-                self.download_file(file, retry=retry-1, post=post)
-                return
+            # already retried for 429
             logger.error(f"Failed to download: {os.path.split(file['file_path'])[1]} | 429 Too Many Requests | All retries failed")
             self.post_errors += 1
             return
@@ -667,12 +697,19 @@ class downloader:
             try:
                 if not os.path.exists(os.path.split(file['file_path'])[0]):
                     os.makedirs(os.path.split(file['file_path'])[0])
+                first_chunk=True
                 with open(part_file, 'wb' if resume_size == 0 else 'ab') as f:
                     start = time.time()
                     downloaded = resume_size
+                    print_download_bar(total, downloaded, resume_size, start)
                     iter_chunk_size = 256<<10
                     puff = bytes()
                     for chunk in response.iter_content(chunk_size=iter_chunk_size):
+                        if first_chunk:
+                            first_chunk=False
+                            if self.headcheck:
+                                if chunk[:len(head_ref)]!=head_ref:
+                                    raise Exception("Head Check Mismatch")
                         puff += chunk
                         downloaded += len(chunk)
                         if len(puff) >= (32<<20)//iter_chunk_size*iter_chunk_size:
